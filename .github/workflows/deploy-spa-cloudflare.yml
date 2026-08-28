@@ -127,59 +127,24 @@ jobs:
         working-directory: ./backend
         run: npx wrangler telemetry disable
 
-      # ==================== 步骤 3：配置 D1 数据库 ====================
-      - name: Create or verify D1 Database
+      # ==================== 步骤 3：D1 数据库（已预配置，跳过创建） ====================
+      - name: Verify D1 Database ID in wrangler.spa.toml
         working-directory: ./backend
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          echo "检查并创建 D1 数据库..."
-          DATABASE_LIST=$(npx wrangler d1 list --json 2>/dev/null || echo "[]")
-          EXISTING_DB=$(echo "$DATABASE_LIST" | jq -r '.[] | select(.name=="cloudpaste-db") | .uuid')
-
-          if [ -n "$EXISTING_DB" ]; then
-            echo "✅ 找到现有 D1 数据库: $EXISTING_DB"
-            DATABASE_ID=$EXISTING_DB
-          else
-            echo "创建新的 D1 数据库..."
-            CREATE_OUTPUT=$(npx wrangler d1 create cloudpaste-db 2>&1)
-
-            if echo "$CREATE_OUTPUT" | grep -q "Successfully created DB"; then
-              DATABASE_ID=$(echo "$CREATE_OUTPUT" | grep -oP "database_id = \"\K[^\"]+")
-              if [ -z "$DATABASE_ID" ]; then
-                DATABASE_ID=$(echo "$CREATE_OUTPUT" | grep -oP "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
-              fi
-              echo "✅ 数据库创建成功: $DATABASE_ID"
-            else
-              LIST_OUTPUT=$(npx wrangler d1 list --json 2>/dev/null || echo "[]")
-              DATABASE_ID=$(echo "$LIST_OUTPUT" | jq -r '.[] | select(.name=="cloudpaste-db") | .uuid')
-
-              if [ -z "$DATABASE_ID" ]; then
-                echo "❌ 无法创建或找到 D1 数据库"
-                exit 1
-              fi
-            fi
-          fi
-
-          # 更新 wrangler.spa.toml 中的 database_id
-          echo "更新 wrangler.spa.toml 中的数据库 ID..."
-          sed -i -E "s/(database_id = \")[^\"]+(\"\s*$)/\1$DATABASE_ID\2/" wrangler.spa.toml
-
-          # 验证更新
-          if grep -q "$DATABASE_ID" wrangler.spa.toml; then
-            echo "✅ wrangler.spa.toml 更新成功"
-          else
-            echo "❌ wrangler.spa.toml 更新失败"
+          echo "检查 wrangler.spa.toml 中的 database_id..."
+          DATABASE_ID=$(grep -oP 'database_id = "\K[^"]+' wrangler.spa.toml || echo "")
+          if [ -z "$DATABASE_ID" ]; then
+            echo "❌ wrangler.spa.toml 中未找到 database_id"
             exit 1
           fi
-
+          echo "✅ database_id 已预设: $DATABASE_ID"
           echo "database_id=$DATABASE_ID" >> $GITHUB_ENV
 
       - name: Initialize D1 Database schema
         working-directory: ./backend
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+          CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           echo "初始化数据库表结构..."
@@ -189,7 +154,8 @@ jobs:
       - name: Resolve ENCRYPTION_SECRET for deploy
         working-directory: ./backend
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+          CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           echo "🔐 检查 ENCRYPTION_SECRET 配置..."
@@ -212,12 +178,12 @@ jobs:
             if grep -q "^ENCRYPTION_SECRET =" wrangler.spa.toml; then
               sed -i -E "s/^ENCRYPTION_SECRET = \".*\"$/ENCRYPTION_SECRET = \"${ENCRYPTION_ESCAPED}\"/" wrangler.spa.toml
             else
-              sed -i -E "/^\\[vars\\]$/a\\ENCRYPTION_SECRET = \"${ENCRYPTION_ESCAPED}\"" wrangler.spa.toml
+              sed -i -E "/^\[vars\]$/a\\ENCRYPTION_SECRET = \"${ENCRYPTION_ESCAPED}\"" wrangler.spa.toml
             fi
             exit 0
           fi
 
-          # 3) GitHub 没配：用 wrangler.spa.toml 
+          # 3) GitHub 没配：用 wrangler.spa.toml
           if grep -q "^ENCRYPTION_SECRET =" wrangler.spa.toml; then
             echo "✅ 使用 wrangler.spa.toml 中的 ENCRYPTION_SECRET"
           else
@@ -229,7 +195,8 @@ jobs:
       - name: Deploy to Cloudflare Workers (SPA Mode)
         working-directory: ./backend
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+          CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           echo "🚀 使用 SPA 配置部署到 Cloudflare Workers..."
@@ -274,10 +241,11 @@ jobs:
           echo "2. 后端部署问题："
           echo "   - 确保 wrangler.spa.toml 配置正确"
           echo "   - 验证 D1 数据库权限"
-          echo "   - 检查 CLOUDFLARE_API_TOKEN 权限（需要 Workers:Edit, D1:Edit）"
+          echo "   - 检查 CLOUDFLARE_API_KEY/CLOUDFLARE_EMAIL 权限（需要 D1:Edit）"
           echo ""
           echo "3. 验证 GitHub Secrets："
-          echo "   - CLOUDFLARE_API_TOKEN: Workers 和 D1 编辑权限"
+          echo "   - CLOUDFLARE_API_KEY: Cloudflare Global API Key（D1 编辑权限）"
+          echo "   - CLOUDFLARE_EMAIL: Cloudflare 登录邮箱"
           echo "   - CLOUDFLARE_ACCOUNT_ID: Cloudflare 账户 ID"
           echo ""
           echo "4. 查看上方详细错误信息以定位问题"
